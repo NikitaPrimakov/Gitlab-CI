@@ -1,0 +1,109 @@
+stages:
+  - build
+  - scan
+
+variables:
+  IMAGE: $CI_PROJECT_NAME:latest
+  PRODUCT_NAME: Trivy Scan
+  DEFECTDOJO_URL: "$URL"
+  DEFECTDOJO_USER: "$USER"
+  TIME_START: "2025-03-05"
+  TIME_END: "2025-03-14"
+  PRODUCT_NAME_TRIVY: Debian
+  ENGAGEMENTS_NAME_TRIVY: debian:3.0
+  SEMGREP_APP_TOKEN: $SEMGREP_TOKEN
+
+
+build-image:     
+  stage: build
+  tags:
+    - docker
+  script:
+      - docker build --pull -t $IMAGE .
+      - docker save -o $IMAGE.tar $IMAGE
+      - ls -la
+  artifacts:
+    paths:
+      - $IMAGE.tar
+  rules:
+    - if: '$CI_COMMIT_REF_PROTECTED == "true" && $CI_COMMIT_REF_NAME == "main"'
+      when: manual
+    - if: '$CI_COMMIT_REF_PROTECTED == "true"'
+      when: manual
+
+trivy-scan:
+  stage: scan
+  image: 
+    name: docker.io/aquasec/trivy:latest
+    entrypoint: [""]
+  tags:
+    - docker
+  needs:
+    - build-image
+  script:
+    - apk add --no-cache curl
+    - apk add --no-cache jq
+    - trivy --version
+    - trivy image --input $IMAGE.tar -f json -o $IMAGE.json
+    - |
+      curl -X POST --header 'Content-Type: application/json' --header 'Accept: application/json' \
+      --header 'X-CSRFToken: $TOKEN' \
+      --header 'Authorization: Token $TOKEN' \
+      -d "{\"name\": \"$PRODUCT_NAME\", \"description\": \"$PRODUCT_NAME\", \"prod_type\": \"1\"}" '${URL}products/'
+    - |
+      ENCODED_PRODUCT_NAME=$(echo "$PRODUCT_NAME" | jq -sRr @uri)
+      PRODUCT_ID=$(curl -s -X GET --header 'Authorization: Token $TOKEN' \
+      "${URL}products/?name=$ENCODED_PRODUCT_NAME" | jq -r '.results[0].id')
+    - |
+      curl -v -X POST "${URL}engagements/" \
+      -H "Authorization: Token $TOKEN" \
+      -F "name=Trivy Scan" -F "product=$PRODUCT_ID" \
+      -F "target_start=$TIME_START" -F "target_end=$TIME_END"
+    - |
+      curl -v -X POST "${URL}import-scan/" -H  "accept: application/json" \
+      -H  "Content-Type: multipart/form-data" \
+      -H "Authorization: Token $TOKEN" -F "minimum_severity=Info" -F "active=true" \
+      -F "verified=true" -F "scan_type=Trivy Scan" -F "close_old_findings=false" \
+      -F "push_to_jira=false" -F "file=@$IMAGE.json" \
+      -F "product_name=$PRODUCT_NAME" -F "scan_date=$TIME_START" -F "engagement_name=Trivy Scan"
+  artifacts:
+    reports:
+      trivy-scan: $IMAGE.json
+    paths:
+      - $IMAGE.json
+  rules:
+    - if: '$CI_COMMIT_REF_PROTECTED == "true" && $CI_COMMIT_REF_NAME == "main"'
+      when: manual
+    - if: '$CI_COMMIT_REF_PROTECTED == "true"'
+      when: manual
+
+semgrep_scan-1:
+  stage: scan
+  image: 
+    name: returntocorp/semgrep:latest
+    entrypoint: [""]
+  tags:
+    - docker
+  needs:
+    - build-image
+  script:
+    - semgrep --config auto badcode.py -o semgrep-results.json
+  artifacts:
+    paths:
+      - semgrep-results.json
+  rules:
+    - if: '$CI_COMMIT_REF_PROTECTED == "true" && $CI_COMMIT_REF_NAME == "main"'
+      when: manual
+    - if: '$CI_COMMIT_REF_PROTECTED == "true"'
+      when: manual
+
+semgrep-scan-2:
+  image: semgrep/semgrep
+  script: semgrep ci
+  stage: scan
+  tags:
+    - docker
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "web"  # allow triggering a scan manually from the gitlab UI
+    - if: $CI_MERGE_REQUEST_IID  # scan on merge request events
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH  # scan on push events to default branch
