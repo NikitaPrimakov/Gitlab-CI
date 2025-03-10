@@ -4,14 +4,9 @@ stages:
 
 variables:
   IMAGE: $CI_PROJECT_NAME:latest
-  PRODUCT_NAME: Trivy Scan
-  DEFECTDOJO_URL: "$URL"
-  DEFECTDOJO_USER: "$USER"
-  TIME_START: "2025-03-05"
+  PRODUCT_NAME: "Trivy"
+  TIME_START: "2025-03-10"
   TIME_END: "2025-03-14"
-  PRODUCT_NAME_TRIVY: Debian
-  ENGAGEMENTS_NAME_TRIVY: debian:3.0
-  SEMGREP_APP_TOKEN: $SEMGREP_TOKEN
 
 
 build-image:     
@@ -46,14 +41,17 @@ trivy-scan:
     - trivy --version
     - trivy image --input $IMAGE.tar -f json -o $IMAGE.json
     - |
-      curl -X POST --header 'Content-Type: application/json' --header 'Accept: application/json' \
-      --header 'X-CSRFToken: $TOKEN' \
-      --header 'Authorization: Token $TOKEN' \
-      -d "{\"name\": \"$PRODUCT_NAME\", \"description\": \"$PRODUCT_NAME\", \"prod_type\": \"1\"}" '${URL}products/'
+      curl -X POST \
+      -H "Content-Type: application/json" \
+      -H "Accept: application/json" \
+      -H "X-CSRFToken: $TOKEN" \
+      -H "Authorization: Token $TOKEN" \
+      -d "{\"name\": \"${PRODUCT_NAME}\", \"description\": \"${PRODUCT_NAME}\", \"prod_type\": \"1\"}" "${URL}products/"
     - |
-      ENCODED_PRODUCT_NAME=$(echo "$PRODUCT_NAME" | jq -sRr @uri)
-      PRODUCT_ID=$(curl -s -X GET --header 'Authorization: Token $TOKEN' \
-      "${URL}products/?name=$ENCODED_PRODUCT_NAME" | jq -r '.results[0].id')
+      ENCODED_NAME=$(echo $PRODUCT_NAME | sed 's/ /%20/g')
+      PRODUCT_ID=$(curl -X GET "http://192.168.0.108:8080/api/v2/products/?name=$ENCODED_NAME" \
+      -H "Authorization: Token 0c7961acb0c2739c0f987f2383c17b91a2223e79" \
+      -H "Accept: application/json" | jq '.results[0].id')
     - |
       curl -v -X POST "${URL}engagements/" \
       -H "Authorization: Token $TOKEN" \
@@ -68,7 +66,7 @@ trivy-scan:
       -F "product_name=$PRODUCT_NAME" -F "scan_date=$TIME_START" -F "engagement_name=Trivy Scan"
   artifacts:
     reports:
-      trivy-scan: $IMAGE.json
+      container_scanning: $IMAGE.json
     paths:
       - $IMAGE.json
   rules:
@@ -87,7 +85,7 @@ semgrep_scan-1:
   needs:
     - build-image
   script:
-    - semgrep --config auto badcode.py -o semgrep-results.json
+    - semgrep --config auto . -o semgrep-results.json
   artifacts:
     paths:
       - semgrep-results.json
@@ -104,6 +102,10 @@ semgrep-scan-2:
   tags:
     - docker
   rules:
-    - if: $CI_PIPELINE_SOURCE == "web"  # allow triggering a scan manually from the gitlab UI
-    - if: $CI_MERGE_REQUEST_IID  # scan on merge request events
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH  # scan on push events to default branch
+    - if: '$CI_COMMIT_REF_PROTECTED == "true" && $CI_COMMIT_REF_NAME == "main"'
+      when: manual
+    - if: '$CI_COMMIT_REF_PROTECTED == "true"'
+      when: manual
+    - if: $CI_PIPELINE_SOURCE == "web"
+    - if: $CI_MERGE_REQUEST_IID
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
